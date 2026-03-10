@@ -1,0 +1,31 @@
+{
+  "name": "@scrywatch/sdk",
+  "version": "1.0.0",
+  "description": "Official JavaScript/TypeScript SDK for ScryWatch log monitoring",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "keywords": ["logging", "observability", "monitoring", "scrywatch", "sdk"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/scrywatch/sdk-js.git"
+  },
+  "homepage": "https://scrywatch.com/guides/javascript-sdk",
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}
