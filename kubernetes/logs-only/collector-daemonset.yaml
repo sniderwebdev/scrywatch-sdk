@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: otel-collector-logs
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app: otel-collector-logs
+  template:
+    metadata:
+      labels:
+        app: otel-collector-logs
+    spec:
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.96.0
+          args: ["--config=/etc/otel/config.yaml"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otel
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-logs-config
+        - name: varlog
+          hostPath:
+            path: /var/log
