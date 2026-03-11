@@ -61,7 +61,11 @@ func (c *Client) userIDStr() string {
 	if v == nil {
 		return ""
 	}
-	return v.(string)
+	str, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	return str
 }
 
 // Info sends an info-level custom event.
