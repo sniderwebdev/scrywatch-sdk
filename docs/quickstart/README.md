@@ -11,5 +11,5 @@ Choose your stack:
 | Go | Go package | [`/packages/go/README.md`](/packages/go/README.md) |
 | Go (net/http middleware) | Go HTTP middleware | [`/packages/go-http/README.md`](/packages/go-http/README.md) |
 | Any stack (raw HTTP) | HTTP ingest | [`/examples/http/README.md`](/examples/http/README.md) |
-| OpenTelemetry | OTel collector | [`/otel/mappings/README.md`](/otel/mappings/README.md) |
+| OpenTelemetry | OTel collector | [`/docs/otel/README.md`](/docs/otel/README.md) |
 | Kubernetes | Kubernetes deployment | [`/kubernetes/helm/README.md`](/kubernetes/helm/README.md) |
