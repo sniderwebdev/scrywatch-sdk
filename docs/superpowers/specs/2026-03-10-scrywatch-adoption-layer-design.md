@@ -1,7 +1,7 @@
 # ScryWatch Adoption Layer Expansion — Design Spec
 
 **Date:** 2026-03-10
-**Status:** In Review
+**Status:** Approved
 **Scope:** Add PHP, Go, Laravel, and Go HTTP middleware packages; HTTP/PHP/Go/Laravel examples; OTel collector configs and mapping docs; Kubernetes deployment assets; developer docs.
 
 ---
