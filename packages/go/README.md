@@ -54,6 +54,9 @@ client.Error(context.Background(), "Payment failed", map[string]any{"order_id": 
 | `Service` | string | no | Overrides client-level service |
 | `Environment` | string | no | Overrides client-level environment |
 | `UserID` | string | no | User identifier |
+| `SessionID` | string | no | Session identifier |
+| `TraceID` | string | no | OTel trace ID for log-trace correlation |
+| `SpanID` | string | no | OTel span ID for log-trace correlation |
 | `DeviceType` | string | no | `"mobile"`, `"desktop"`, etc. |
 | `Metadata` | `map[string]any` | no | Arbitrary JSON-serialisable data |
 
