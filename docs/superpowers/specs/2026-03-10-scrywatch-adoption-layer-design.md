@@ -132,7 +132,7 @@ $client->setUserId(string $id): void
 
 ### 3.5 Retry Behavior
 
-Up to `maxRetries` attempts on network exception or non-202 response. Linear backoff: 500 ms × attempt number (attempt 1 waits 500 ms, attempt 2 waits 1000 ms, attempt 3 waits 1500 ms). Throws `ScryWatchException` after the final failure.
+Up to `maxRetries` attempts on network exception or 5xx response. Linear backoff: 500 ms × attempt number (attempt 1 waits 500 ms, attempt 2 waits 1000 ms, attempt 3 waits 1500 ms). Throws `ScryWatchException` after the final failure. **4xx responses are treated as final failures and throw immediately** — retrying a 400 Bad Request is wasteful and misleading.
 
 ### 3.6 PHP Buffering Note
 
@@ -187,11 +187,11 @@ func (c *Client) Send(ctx context.Context, events []LogEvent) error
 func (c *Client) SetUserID(id string)
 ```
 
-All methods accept `context.Context` for cancellation and deadline propagation.
+All methods accept `context.Context` for cancellation and deadline propagation. `SetUserID` is safe for concurrent use — the client stores the user ID atomically.
 
 ### 4.4 Retry Behavior
 
-Exponential backoff: 100 ms base, doubles per attempt, up to `maxRetries`. Retries on network errors and non-202 responses. Returns error after final attempt.
+Exponential backoff: 100 ms base, doubles per attempt, up to `maxRetries`. Retries on network errors and 5xx responses only. **4xx responses return an error immediately** — they indicate a client error that retrying will not fix. Returns error after final attempt.
 
 ### 4.5 `LogEvent` Type
 
@@ -224,9 +224,12 @@ type LogEvent struct {
 ```
 packages/go-http/
 ├── go.mod
+├── go.sum
 ├── README.md
 └── middleware.go
 ```
+
+`go.sum` **must be committed** — unlike `sdk-go` (zero deps, empty sum), `sdk-go-http` has `github.com/scrywatch/sdk-go` as a real dependency, so `go.sum` will contain the dependency's hash entries. Reproducible builds require it.
 
 `sdk-go-http` imports `github.com/scrywatch/sdk-go` as a direct dependency. This is the only external dependency. The `replace` directive in `go.mod` points to `../go` for local development; downstream consumers reference the published version normally.
 
@@ -269,7 +272,7 @@ packages/laravel/
     └── ScryWatchChannel.php
 ```
 
-`composer.json` requires: `scrywatch/php: ^1.0`, `laravel/framework: ^10.0 || ^11.0`.
+`composer.json` requires: `scrywatch/php: ^1.0`, `laravel/framework: ^10.0 || ^11.0 || ^12.0`. Laravel 12 was released in early 2026; the constraint must include it. Verify CI against all three majors before publishing.
 
 ### 6.2 ServiceProvider
 
@@ -303,6 +306,8 @@ return [
 
 NOTICE collapses to `info` because ScryWatch has no NOTICE equivalent and it carries the same severity semantics in practice. CRITICAL, ALERT, and EMERGENCY all collapse to `error` — the highest ScryWatch severity.
 
+The Monolog channel handler calls `$client->log($level, 'custom', $message, $context)` for all records, where `$level` is the mapped ScryWatch level string.
+
 ---
 
 ## 7. OTel Assets
@@ -326,7 +331,7 @@ Two YAML templates:
 
 1. **`traces-with-scrywatch.yaml`** — Collector receives OTLP (gRPC + HTTP), exports traces to `POST /api/traces/otlp` via `otlphttp` exporter. Clear `${env:SCRYWATCH_API_KEY}` and `${env:SCRYWATCH_ENDPOINT}` placeholders. `batch` and `memory_limiter` processors included.
 
-2. **`full-pipeline.yaml`** — Same traces path, plus `filelog` receiver tailing container stdout and a generic HTTP/file exporter for logs. The log pipeline explicitly notes in comments that OTLP log ingest is not yet implemented and that direct SDK usage is the recommended path.
+2. **`full-pipeline.yaml`** — Same traces path, plus `filelog` receiver tailing container stdout. The log pipeline uses the `file` exporter writing to `/var/log/scrywatch-collector-logs.json` as the demonstration sink. The log pipeline config block includes a comment header: `# OTLP log ingest is not yet supported by ScryWatch. Use the ScryWatch SDK directly from application code for log shipping. This pipeline demonstrates collection and parsing only.`
 
 ### 7.3 `/otel/mappings/`
 
@@ -374,7 +379,7 @@ Three files: `collector-configmap.yaml`, `collector-deployment.yaml`, `scrywatch
 | Path | Contents |
 |------|----------|
 | `/examples/http/` | `curl` examples for `/api/ingest`, `/api/traces/otlp`; JSON event shapes; batch example |
-| `/examples/php/` | Basic PHP client usage; optional Monolog-style example |
+| `/examples/php/` | Basic PHP client usage; structured log-call example showing multiple levels and metadata |
 | `/examples/go/` | Basic Go client usage; `slog`-compatible wrapper example |
 | `/examples/laravel/` | Minimal Laravel channel config and log call example |
 
@@ -400,4 +405,4 @@ Each doc is a focused `README.md` in its directory:
 - ScryWatch backend changes
 - Native OTLP log or metric ingest (documented as aspirational only)
 - Helm chart authoring (values snippets only — references the upstream `opentelemetry-collector` chart)
-- CI/CD pipeline changes
+- CI/CD pipeline configuration for new packages — test automation for `/packages/php`, `/packages/go`, `/packages/laravel`, and `/packages/go-http` is a follow-on task and not part of this expansion
