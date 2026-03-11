@@ -32,7 +32,7 @@ kubectl create secret generic scrywatch-credentials \
 helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
 helm repo update
 helm install otel-collector open-telemetry/opentelemetry-collector \
-  --namespace observability \
+  --namespace observability --create-namespace \
   -f values-logs-and-traces.yaml
 ```
 
