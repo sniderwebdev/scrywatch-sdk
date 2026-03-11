@@ -1,0 +1,85 @@
+# values-logs-and-traces.yaml
+# Helm values snippet for open-telemetry/opentelemetry-collector chart.
+# Collects container logs and ships OTLP traces to ScryWatch.
+#
+# Prerequisites:
+#   kubectl create secret generic scrywatch-credentials \
+#     --from-literal=SCRYWATCH_API_KEY=<your-key> \
+#     --from-literal=SCRYWATCH_ENDPOINT=https://api.scrywatch.com \
+#     -n observability
+#
+# Install:
+#   helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+#   helm install otel-collector open-telemetry/opentelemetry-collector \
+#     -f values-logs-and-traces.yaml
+
+mode: daemonset
+
+extraEnvsFrom:
+  - secretRef:
+      name: scrywatch-credentials
+
+config:
+  receivers:
+    filelog:
+      include: [/var/log/pods/**/*.log]
+      operators:
+        - type: json_parser
+          timestamp:
+            parse_from: attributes.time
+            layout: "%Y-%m-%dT%H:%M:%SZ"
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+  processors:
+    memory_limiter:
+      check_interval: 1s
+      limit_mib: 256
+    batch:
+      timeout: 5s
+      send_batch_size: 50
+
+  exporters:
+    debug:
+      verbosity: normal
+    otlphttp/scrywatch:
+      endpoint: "${SCRYWATCH_ENDPOINT}/api/traces/otlp"
+      headers:
+        Authorization: "Bearer ${SCRYWATCH_API_KEY}"
+
+  service:
+    pipelines:
+      logs:
+        receivers:  [filelog]
+        processors: [memory_limiter, batch]
+        exporters:  [debug]
+      traces:
+        receivers:  [otlp]
+        processors: [memory_limiter, batch]
+        exporters:  [otlphttp/scrywatch]
+
+extraVolumes:
+  - name: varlog
+    hostPath:
+      path: /var/log
+
+extraVolumeMounts:
+  - name: varlog
+    mountPath: /var/log
+    readOnly: true
+
+ports:
+  otlp:
+    enabled: true
+    containerPort: 4317
+    servicePort: 4317
+    protocol: TCP
+  otlp-http:
+    enabled: true
+    containerPort: 4318
+    servicePort: 4318
+    protocol: TCP

@@ -1,0 +1,50 @@
+# values-logs-only.yaml
+# Helm values snippet for open-telemetry/opentelemetry-collector chart.
+# Collects container logs from /var/log/pods — does NOT ship to ScryWatch
+# (ScryWatch does not yet support OTLP log ingest).
+# Use the ScryWatch SDK directly for log shipping.
+#
+# Install:
+#   helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+#   helm install otel-collector open-telemetry/opentelemetry-collector \
+#     -f values-logs-only.yaml
+
+mode: daemonset
+
+config:
+  receivers:
+    filelog:
+      include: [/var/log/pods/**/*.log]
+      operators:
+        - type: json_parser
+          timestamp:
+            parse_from: attributes.time
+            layout: "%Y-%m-%dT%H:%M:%SZ"
+
+  processors:
+    memory_limiter:
+      check_interval: 1s
+      limit_mib: 128
+    batch:
+      timeout: 5s
+
+  exporters:
+    debug:
+      verbosity: normal
+
+  service:
+    pipelines:
+      logs:
+        receivers:  [filelog]
+        processors: [memory_limiter, batch]
+        exporters:  [debug]
+
+extraVolumes:
+  - name: varlog
+    hostPath:
+      path: /var/log
+
+extraVolumeMounts:
+  - name: varlog
+    mountPath: /var/log
+    readOnly: true
