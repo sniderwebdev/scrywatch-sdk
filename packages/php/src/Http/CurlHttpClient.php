@@ -34,6 +34,10 @@ final class CurlHttpClient
 
         $ch = curl_init($url);
 
+        if ($ch === false) {
+            return 0; // treat as transport failure; sendWithRetry will retry or throw
+        }
+
         curl_setopt_array($ch, [
             CURLOPT_POST           => true,
             CURLOPT_POSTFIELDS     => $body,

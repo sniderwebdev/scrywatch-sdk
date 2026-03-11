@@ -8,22 +8,21 @@ use Psr\Http\Message\RequestFactoryInterface;
 use Psr\Http\Message\StreamFactoryInterface;
 use ScryWatch\Http\CurlHttpClient;
 
-class ScryWatchClient
+final class ScryWatchClient
 {
     private ?string $userId = null;
-    private readonly CurlHttpClient $curlClient;
 
     public function __construct(
         private readonly string                    $endpoint,
         private readonly string                    $apiKey,
         private readonly ?string                   $service        = null,
         private readonly ?string                   $environment    = null,
+        /** @param int $maxRetries Number of retry attempts after the initial request. Total network calls = maxRetries + 1. Default is 3 (4 total calls). */
         private readonly int                       $maxRetries     = 3,
         private readonly ?ClientInterface          $httpClient     = null,
         private readonly ?RequestFactoryInterface  $requestFactory = null,
         private readonly ?StreamFactoryInterface   $streamFactory  = null,
     ) {
-        $this->curlClient = new CurlHttpClient();
     }
 
     public function setUserId(string $id): void
@@ -149,6 +148,6 @@ class ScryWatchClient
             return $response->getStatusCode();
         }
 
-        return $this->curlClient->post($url, $headers, $body);
+        return (new CurlHttpClient())->post($url, $headers, $body);
     }
 }
