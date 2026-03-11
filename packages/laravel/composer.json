@@ -1,0 +1,23 @@
+{
+  "name": "scrywatch/laravel",
+  "description": "Laravel integration for the ScryWatch PHP client",
+  "type": "library",
+  "license": "MIT",
+  "require": {
+    "php": "^8.1",
+    "scrywatch/php": "^1.0",
+    "laravel/framework": "^10.0 || ^11.0 || ^12.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "ScryWatch\\Laravel\\": "src/"
+    }
+  },
+  "extra": {
+    "laravel": {
+      "providers": [
+        "ScryWatch\\Laravel\\ScryWatchServiceProvider"
+      ]
+    }
+  }
+}
