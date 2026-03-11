@@ -1,0 +1,50 @@
+# otel/collector/traces-with-scrywatch.yaml
+#
+# Routes OTLP traces to ScryWatch.
+# ScryWatch supports OTLP HTTP/JSON for TRACES ONLY.
+# For logs: use the ScryWatch SDK directly (POST /api/ingest).
+#
+# Required environment variables:
+#   SCRYWATCH_API_KEY   — your project API key
+#   SCRYWATCH_ENDPOINT  — e.g. https://api.scrywatch.com
+
+receivers:
+  otlp:
+    protocols:
+      # The Collector accepts gRPC and HTTP from your instrumented services.
+      # ScryWatch only accepts OTLP HTTP/JSON — the otlphttp exporter below
+      # handles that translation automatically (gRPC → HTTP at export time).
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+  batch:
+    timeout: 5s
+    send_batch_size: 50
+
+exporters:
+  otlphttp/scrywatch:
+    endpoint: ${env:SCRYWATCH_ENDPOINT}
+    headers:
+      Authorization: "Bearer ${env:SCRYWATCH_API_KEY}"
+    traces_endpoint: ${env:SCRYWATCH_ENDPOINT}/api/traces/otlp
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 100
+
+service:
+  pipelines:
+    traces:
+      receivers:  [otlp]
+      processors: [memory_limiter, batch]
+      exporters:  [otlphttp/scrywatch]
