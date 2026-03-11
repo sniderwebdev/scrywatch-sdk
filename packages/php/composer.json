@@ -1,0 +1,28 @@
+{
+  "name": "scrywatch/php",
+  "description": "Lightweight PHP client for ScryWatch structured log ingest",
+  "type": "library",
+  "license": "MIT",
+  "require": {
+    "php": "^8.1",
+    "psr/http-client": "^1.0",
+    "psr/http-factory": "^1.0"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^10.0",
+    "nyholm/psr7": "^1.8"
+  },
+  "autoload": {
+    "psr-4": {
+      "ScryWatch\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "ScryWatch\\Tests\\": "tests/"
+    }
+  },
+  "config": {
+    "optimize-autoloader": true
+  }
+}

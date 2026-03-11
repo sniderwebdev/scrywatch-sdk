@@ -1,0 +1,60 @@
+# otel/collector/full-pipeline.yaml
+#
+# Traces: routed to ScryWatch OTLP endpoint.
+# Logs:   collected from container stdout, written to local file for demonstration.
+#
+# ⚠️  OTLP log ingest is NOT yet supported by ScryWatch.
+#     Use the ScryWatch SDK directly from application code for log shipping.
+#     This log pipeline shows collection and parsing only.
+#     Note: Replace the 'file' exporter with your preferred log sink.
+
+receivers:
+  otlp:
+    protocols:
+      # The Collector accepts gRPC and HTTP from your instrumented services.
+      # ScryWatch only accepts OTLP HTTP/JSON — the otlphttp exporter below
+      # handles that translation automatically (gRPC → HTTP at export time).
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+  filelog:
+    include: [/var/log/containers/*.log]
+    operators:
+      - type: json_parser
+        timestamp:
+          parse_from: attributes.time
+          layout: "%Y-%m-%dT%H:%M:%S.%LZ"
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 384
+  batch:
+    timeout: 5s
+    send_batch_size: 50
+
+exporters:
+  otlphttp/scrywatch:
+    endpoint: ${env:SCRYWATCH_ENDPOINT}
+    headers:
+      Authorization: "Bearer ${env:SCRYWATCH_API_KEY}"
+    traces_endpoint: ${env:SCRYWATCH_ENDPOINT}/api/traces/otlp
+    retry_on_failure:
+      enabled: true
+
+  # Log demonstration sink — replace with your preferred forwarder.
+  # See /kubernetes/logs-only/ for the Kubernetes equivalent (uses debug/stdout).
+  file:
+    path: /var/log/scrywatch-collector-logs.json
+
+service:
+  pipelines:
+    traces:
+      receivers:  [otlp]
+      processors: [memory_limiter, batch]
+      exporters:  [otlphttp/scrywatch]
+    logs:
+      receivers:  [filelog]
+      processors: [memory_limiter, batch]
+      exporters:  [file]
