@@ -7,8 +7,9 @@ export function detectDeviceType(): string {
     if (/mobile/.test(ua)) return 'mobile';
     return 'desktop';
   }
-  if (typeof process !== 'undefined') {
-    const platform = process.platform;
+  const proc = (globalThis as { process?: { platform?: string } }).process;
+  if (proc && typeof proc.platform === 'string') {
+    const platform = proc.platform;
     if (platform === 'darwin') return 'macos';
     if (platform === 'win32') return 'windows';
     if (platform === 'linux') return 'linux';
