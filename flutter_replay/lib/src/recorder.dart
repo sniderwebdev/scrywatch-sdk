@@ -1,0 +1,249 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+import 'package:flutter/rendering.dart';
+import 'package:flutter/widgets.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'mask.dart';
+
+/// Bound on how long the startup policy fetch is allowed to block [start].
+/// Keeps a slow/unreachable backend from ever meaningfully delaying app
+/// startup — the safe default policy is already active before this fires.
+const Duration _kPolicyFetchTimeout = Duration(seconds: 5);
+
+/// Cap on how many distinct tags are reported per upload (see
+/// [ReplayRecorder._seenTags]) — bounds the `x-replay-meta` header size
+/// regardless of how many distinct [ScrywatchTag] strings an app defines.
+const int _kMaxReportedTags = 50;
+
+class ReplayRecorder {
+  ReplayRecorder({
+    required this.endpoint,
+    required this.apiKey,
+    required this.boundaryKey,
+    http.Client? httpClient,
+  }) : _httpClient = httpClient ?? http.Client();
+  final String endpoint;
+  final String apiKey;
+  final GlobalKey boundaryKey;
+
+  /// Injectable for tests, so the policy-fetch and upload paths can be
+  /// exercised against a `package:http/testing.dart` `MockClient` instead of
+  /// the real network. Defaults to a real [http.Client] in production.
+  final http.Client _httpClient;
+
+  bool _consent = false;
+  int _seq = 0;
+  String _sessionId = '';
+  Timer? _timer;
+
+  /// The current replay session id — paste this into the ScryWatch
+  /// dashboard's Replay view to watch this session back. Empty until
+  /// [start] has run.
+  String get sessionId => _sessionId;
+  int totalBytes = 0; // instrumentation
+  final List<int> frameEncodeMs = []; // instrumentation
+  int droppedFrames = 0; // instrumentation
+  DateTime? _recordingStartedAt;
+  // Bumped after every capture attempt so the metrics readout rebuilds only
+  // when there's new data — avoids a free-running timer (which would break
+  // widget-test pumpAndSettle).
+  final ValueNotifier<int> metricsRevision = ValueNotifier<int>(0);
+
+  Future<void> start() async {
+    final prefs = await SharedPreferences.getInstance();
+    _sessionId = prefs.getString('replay_session_id') ??
+        (DateTime.now().microsecondsSinceEpoch.toRadixString(36));
+    await prefs.setString('replay_session_id', _sessionId);
+    debugPrint('[scrywatch_replay] session id: $_sessionId  '
+        '(paste into the dashboard Replay view)');
+    metricsRevision.value++; // surface the session id in the readout
+
+    await _fetchAndApplyPolicy();
+  }
+
+  /// Fetches this project's remote mask policy and applies it via
+  /// [MaskRegistry.setPolicy].
+  ///
+  /// SECURITY-CRITICAL fail-safe contract: masking must never end up
+  /// WEAKER as a result of calling this. On ANY failure — network error,
+  /// timeout, a non-200 response, or a body that isn't the expected JSON
+  /// shape — this leaves [MaskRegistry.instance]'s current policy exactly
+  /// as it was (the built-in blocklist-mode default on first run, or
+  /// whatever a prior successful fetch already applied) and returns
+  /// normally. The always-on floor (PII text, `obscureText`, platform
+  /// surfaces — see mask.dart) applies regardless of policy or fetch
+  /// outcome. Bounded by [_kPolicyFetchTimeout] so an unreachable backend
+  /// can't hang app startup. Never throws.
+  Future<void> _fetchAndApplyPolicy() async {
+    try {
+      final http.Response response = await _httpClient
+          .get(
+            Uri.parse('$endpoint/api/replay/policy'),
+            headers: <String, String>{'Authorization': 'Bearer $apiKey'},
+          )
+          .timeout(_kPolicyFetchTimeout);
+      if (response.statusCode != 200) {
+        debugPrint(
+          '[scrywatch_replay] mask policy fetch returned '
+          '${response.statusCode}, keeping current policy',
+        );
+        return;
+      }
+      final Object? decoded = jsonDecode(response.body);
+      if (decoded is! Map<String, dynamic>) {
+        debugPrint('[scrywatch_replay] mask policy response was not a JSON '
+            'object, keeping current policy');
+        return;
+      }
+      final MaskPolicy policy = MaskPolicy.fromJson(decoded);
+      MaskRegistry.instance.setPolicy(policy);
+      debugPrint(
+        '[scrywatch_replay] applied mask policy v${policy.version} '
+        '(mode: ${policy.mode.name}, ${policy.rules.length} rule(s))',
+      );
+    } catch (e) {
+      // Network error, timeout, malformed JSON, unexpected shape, etc. —
+      // never let a policy-fetch failure crash startup or weaken masking;
+      // MaskRegistry keeps whatever policy it already had.
+      debugPrint('[scrywatch_replay] mask policy fetch failed, keeping '
+          'current policy: $e');
+    }
+  }
+
+  void setConsent(bool v) => _consent = v;
+
+  void resume() {
+    _recordingStartedAt ??= DateTime.now();
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
+  }
+  void stop() => _timer?.cancel();
+
+  Future<void> _tick() async {
+    if (!_consent) return; // consent gate: capture nothing
+    final sw = Stopwatch()..start();
+    final Uint8List? png = await _captureMaskedPng();
+    if (png == null) {
+      droppedFrames++; // fail-safe: dropped an uncertain frame
+      metricsRevision.value++;
+      return;
+    }
+    sw.stop();
+    frameEncodeMs.add(sw.elapsedMilliseconds);
+    totalBytes += png.length;
+    final seq = _seq++;
+    final Map<String, Object?> meta = <String, Object?>{
+      'session_id': _sessionId,
+      'seq': seq,
+      'start_ts': DateTime.now().millisecondsSinceEpoch,
+      'end_ts': DateTime.now().millisecondsSinceEpoch,
+      'frame_count': 1,
+      'platform': 'flutter',
+    };
+    final List<Map<String, String>> tags = _seenTags();
+    if (tags.isNotEmpty) meta['tags'] = tags;
+    await _httpClient.post(
+      Uri.parse('$endpoint/api/replay'),
+      headers: {
+        'Authorization': 'Bearer $apiKey',
+        'x-replay-meta': jsonEncode(meta),
+        'content-type': 'application/octet-stream',
+      },
+      body: png,
+    );
+    metricsRevision.value++;
+    debugPrint(metricsSummary());
+  }
+
+  /// The distinct tag strings currently registered via [ScrywatchTag] (see
+  /// [MaskRegistry.taggedKeys]), shaped for `x-replay-meta.tags` so the
+  /// worker can record what tags this project actually uses (tag
+  /// telemetry) and the dashboard can offer them as a `tag`-rule pick-list.
+  /// Capped at [_kMaxReportedTags] so an app with a runaway number of
+  /// distinct tags can't bloat the upload header; this is purely reporting,
+  /// it has no effect on what gets masked.
+  List<Map<String, String>> _seenTags() {
+    return MaskRegistry.instance.taggedKeys.keys
+        .take(_kMaxReportedTags)
+        .map((String tag) => <String, String>{'tag': tag, 'kind': 'tag'})
+        .toList(growable: false);
+  }
+
+  // `boundaryKey` wraps the RAW app (see `maskedRoot()` in mask.dart — no
+  // visible overlay). So we capture the raw frame, then redact it as a
+  // POST-CAPTURE pass on the bitmap (`maskImage`) before encode/upload. The
+  // live screen is never masked; only the pixels that leave the device are.
+  //
+  // Fail-safe at every step: if the boundary isn't mounted/laid out, or the
+  // capture/mask/encode throws, we drop the frame rather than risk sending an
+  // un-redacted one. `maskImage` itself also fails closed (fully-masked frame)
+  // if rect resolution goes wrong — so we never under-mask.
+  Future<Uint8List?> _captureMaskedPng() async {
+    final ctx = boundaryKey.currentContext;
+    if (ctx == null) return null; // fail-safe
+    final boundary = ctx.findRenderObject() as RenderRepaintBoundary?;
+    if (boundary == null || !boundary.attached || !boundary.hasSize) {
+      return null; // fail-safe
+    }
+    const double pixelRatio = 1.0;
+    // Resolve mask geometry synchronously from the currently laid-out tree,
+    // BEFORE any await — so we never touch the BuildContext across an async
+    // gap, and the geometry matches the frame we're about to capture. `scale`
+    // is the capture pixelRatio (logical rects -> device pixels).
+    final MaskGeometry geometry = computeMaskGeometry(ctx, boundary);
+    ui.Image? raw;
+    ui.Image? masked;
+    try {
+      raw = await boundary.toImage(pixelRatio: pixelRatio);
+      masked = await maskImage(raw, geometry, scale: pixelRatio);
+      final bytes = await masked.toByteData(format: ui.ImageByteFormat.png);
+      return bytes?.buffer.asUint8List();
+    } catch (_) {
+      return null; // fail-safe: drop rather than risk an unmasked frame
+    } finally {
+      raw?.dispose();
+      masked?.dispose();
+    }
+  }
+
+  int get framesSent => _seq;
+
+  /// Live measurement metrics, useful for an app's own on-device debug
+  /// readout. Values mix int/double; keyed for a compact display + a
+  /// copyable summary line.
+  Map<String, Object> metrics() {
+    final DateTime? started = _recordingStartedAt;
+    final double elapsedSec = started == null
+        ? 0
+        : DateTime.now().difference(started).inMilliseconds / 1000.0;
+    final double kbPerMin =
+        elapsedSec > 0 ? (totalBytes / 1024.0) / (elapsedSec / 60.0) : 0;
+    final List<int> sorted = List<int>.from(frameEncodeMs)..sort();
+    final double avgMs = sorted.isEmpty
+        ? 0
+        : sorted.reduce((int a, int b) => a + b) / sorted.length;
+    final int p95Ms =
+        sorted.isEmpty ? 0 : sorted[((sorted.length - 1) * 0.95).floor()];
+    return <String, Object>{
+      'framesSent': _seq,
+      'droppedFrames': droppedFrames,
+      'totalKB': double.parse((totalBytes / 1024).toStringAsFixed(1)),
+      'elapsedSec': double.parse(elapsedSec.toStringAsFixed(0)),
+      'kbPerMin': double.parse(kbPerMin.toStringAsFixed(1)),
+      'avgFrameMs': double.parse(avgMs.toStringAsFixed(1)),
+      'p95FrameMs': p95Ms,
+    };
+  }
+
+  /// One-line human-readable summary for the console / "copy metrics".
+  String metricsSummary() {
+    final Map<String, Object> m = metrics();
+    return 'scrywatch_replay metrics — frames=${m['framesSent']} dropped=${m['droppedFrames']} '
+        'total=${m['totalKB']}KB elapsed=${m['elapsedSec']}s rate=${m['kbPerMin']}KB/min '
+        'avgEncode=${m['avgFrameMs']}ms p95Encode=${m['p95FrameMs']}ms';
+  }
+}

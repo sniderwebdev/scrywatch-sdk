@@ -1,0 +1,111 @@
+# scrywatch_replay (Flutter SDK)
+
+Session-replay SDK for [ScryWatch](https://scrywatch.com): deny-by-default masking, an always-on PII floor, and remote-policy-driven capture for Flutter apps.
+
+> **Preview (0.1.0).** The public API in this package may change before a stable 1.0 release. Masking behavior is the gate we hold ourselves to most strictly — see [Masking model](#masking-model) below.
+
+## Install
+
+In `pubspec.yaml`:
+
+```yaml
+dependencies:
+  scrywatch_replay: ^0.1.0
+```
+
+```bash
+flutter pub get
+```
+
+## Quick start
+
+```dart
+import 'package:flutter/material.dart';
+import 'package:scrywatch_replay/scrywatch_replay.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Creates the recorder, generates/persists a session id, and fetches
+  // this project's remote mask policy. Nothing is captured yet.
+  await ScrywatchReplay.init(apiKey: 'YOUR_API_KEY');
+
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      // `builder` inserts the capture boundary BELOW MaterialApp's own
+      // Directionality/MediaQuery and wraps the Navigator — so pushed
+      // routes are captured too. The live screen is never altered; masking
+      // is applied to the captured bitmap only, after capture.
+      builder: ScrywatchReplay.wrap,
+      home: const HomeScreen(),
+    );
+  }
+}
+```
+
+Grant consent to start recording — nothing is captured, encoded, or uploaded before this call:
+
+```dart
+ScrywatchReplay.setConsent(true);
+```
+
+Revoke consent or stop recording outright at any time:
+
+```dart
+ScrywatchReplay.setConsent(false);
+// or
+ScrywatchReplay.stop();
+```
+
+See [`example/example.dart`](example/example.dart) for a complete runnable example.
+
+## Masking model
+
+Every captured frame is redacted **after** capture, as a pass over the bitmap — the live screen on the user's device is never blacked out; only the pixels that leave the device are masked. This is the same approach used by Sentry/PostHog session replay.
+
+Three widgets control what's eligible to show:
+
+| Widget | Behavior |
+|---|---|
+| `ScrywatchTag('name', child: ...)` | Attaches an opaque, developer-chosen tag to a subtree. Whether a tagged region is masked is decided by the **remote mask policy** (configurable from the ScryWatch dashboard) via a `tag` rule — so you can start/stop masking a tagged region without an app release. |
+| `ScrywatchMask(child: ...)` | Force-masks a subtree. Always occluded, in every mode, and can never be revealed — even inside a `ScrywatchReveal`. |
+| `ScrywatchReveal(child: ...)` | Marks a subtree as eligible to show through the mask. Only matters in **strict** mode (see below); in **blocklist** mode it's a no-op. |
+
+### The always-on floor
+
+Regardless of tags, mode, or the remote policy, these are **always** masked and can never be revealed:
+
+- Any `TextField`/`EditableText` with `obscureText: true`.
+- Text matching an email address, a Luhn-valid 13–19 digit card/PAN, an SSN (`123-45-6789`), or a phone number — scanned from `Text`, `Text.rich`, `EditableText`, and `RichText` content.
+- Platform-view / native-texture surfaces: WebViews, camera/video previews, and any other embedded native view (their pixels come from outside Flutter's render tree and can't be text-scanned).
+
+### Modes
+
+The remote policy (fetched at `ScrywatchReplay.init()`, configurable in the ScryWatch dashboard's masking editor) sets one of two modes:
+
+- **blocklist** (default) — records everything except the always-on floor and anything matched by a rule (`tag`, `widgetType`, or `textPattern`). Best fidelity, safe default for adoption.
+- **strict** — deny-by-default: everything is masked except `ScrywatchReveal`-wrapped subtrees. The floor still wins — PII inside a `ScrywatchReveal` is masked regardless.
+
+### Fail-safe behavior
+
+If the remote policy fetch fails (network error, timeout, malformed response) the SDK keeps its current policy — which is the safe blocklist-mode default on first run — and never falls back to something less strict. If a hard-masked element's on-screen position can't be resolved for a given frame (mid-relayout, just-mounted, etc.), the **entire frame** is occluded for that tick rather than risking an under-masked region shipping in the clear.
+
+## Links
+
+- [Session replay guide](https://scrywatch.com/guides/24-session-replay-overview)
+- Dashboard masking editor — configure the remote policy without an app release (see your ScryWatch project settings)
+
+## Dependencies
+
+This package depends on [`package:http`](https://pub.dev/packages/http) (policy fetch + frame upload) and [`package:shared_preferences`](https://pub.dev/packages/shared_preferences) (persisting the session id). No other dependencies.
+
+## License
+
+MIT
