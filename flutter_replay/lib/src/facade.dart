@@ -100,6 +100,26 @@ class ScrywatchReplay {
     _recorder?.stop();
   }
 
+  /// Rotates to a brand-new replay session, discarding the current one.
+  ///
+  /// Call this on sign-in / user change (after [init] has completed) so a
+  /// newly-signed-in user's frames are never appended to a session that
+  /// began under a different — possibly different-user — identity. A no-op
+  /// before [init] completes.
+  static Future<void> rotateSession() async {
+    await _recorder?.rotateSession();
+  }
+
+  /// Clears the current replay session entirely, leaving no active session
+  /// id.
+  ///
+  /// Call this on sign-out so nothing captured afterward — until the next
+  /// [init]/[rotateSession] — can be attributed to the signed-out user's
+  /// session. A no-op before [init] completes.
+  static Future<void> clearSession() async {
+    await _recorder?.clearSession();
+  }
+
   /// Wraps [child] in the capture boundary. Pass this directly as
   /// `MaterialApp.builder` (or `CupertinoApp.builder`/`WidgetsApp.builder`)
   /// so it sits BELOW the app's `Directionality`/`MediaQuery` and wraps the

@@ -14,12 +14,17 @@ import 'mask.dart';
 /// startup — the safe default policy is already active before this fires.
 const Duration _kPolicyFetchTimeout = Duration(seconds: 5);
 
+/// Bound on how long a single frame upload is allowed to hang. Keeps a
+/// slow/unreachable backend from piling up in-flight requests behind the
+/// once-per-second capture timer.
+const Duration _kUploadTimeout = Duration(seconds: 10);
+
 /// Cap on how many distinct tags are reported per upload (see
 /// [ReplayRecorder._seenTags]) — bounds the `x-replay-meta` header size
 /// regardless of how many distinct [ScrywatchTag] strings an app defines.
 const int _kMaxReportedTags = 50;
 
-class ReplayRecorder {
+class ReplayRecorder with WidgetsBindingObserver {
   ReplayRecorder({
     required this.endpoint,
     required this.apiKey,
@@ -39,6 +44,16 @@ class ReplayRecorder {
   int _seq = 0;
   String _sessionId = '';
   Timer? _timer;
+
+  /// Whether the [WidgetsBindingObserver] is currently registered — tracked
+  /// so we register/unregister at most once and never leak the observer.
+  bool _observing = false;
+
+  /// True while capture is intended to be active (consent granted and
+  /// [resume] has been called) — including while the timer is paused
+  /// because the app is backgrounded. Used by [didChangeAppLifecycleState]
+  /// to decide whether to restart the timer on resume.
+  bool _capturing = false;
 
   /// The current replay session id — paste this into the ScryWatch
   /// dashboard's Replay view to watch this session back. Empty until
@@ -63,6 +78,38 @@ class ReplayRecorder {
     metricsRevision.value++; // surface the session id in the readout
 
     await _fetchAndApplyPolicy();
+  }
+
+  /// Rotates to a brand-new session id, discarding the old one.
+  ///
+  /// Call this on sign-in / user change so a newly-signed-in user's frames
+  /// can never be appended to a session that started under a different
+  /// (possibly different-user) identity. Resets the frame sequence counter
+  /// so the new session's frames are numbered from zero.
+  Future<void> rotateSession() async {
+    final String newSessionId =
+        DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('replay_session_id', newSessionId);
+    _sessionId = newSessionId;
+    _seq = 0;
+    debugPrint('[scrywatch_replay] session id rotated: $_sessionId');
+    metricsRevision.value++;
+  }
+
+  /// Clears the current session entirely, leaving no active session id.
+  ///
+  /// Call this on sign-out so no further frames — including any captured
+  /// before the next [start]/[rotateSession] — can be attributed to the
+  /// signed-out user's session. [_tick] refuses to upload while the
+  /// session id is empty (see the empty-session guard there).
+  Future<void> clearSession() async {
+    _sessionId = '';
+    _seq = 0;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('replay_session_id');
+    debugPrint('[scrywatch_replay] session cleared');
+    metricsRevision.value++;
   }
 
   /// Fetches this project's remote mask policy and applies it via
@@ -118,13 +165,59 @@ class ReplayRecorder {
 
   void resume() {
     _recordingStartedAt ??= DateTime.now();
+    _capturing = true;
+    if (!_observing) {
+      WidgetsBinding.instance.addObserver(this);
+      _observing = true;
+    }
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
   }
-  void stop() => _timer?.cancel();
+
+  void stop() {
+    _capturing = false;
+    _timer?.cancel();
+    if (_observing) {
+      WidgetsBinding.instance.removeObserver(this);
+      _observing = false;
+    }
+  }
+
+  /// Pauses capture while the app is backgrounded and resumes it when the
+  /// app comes back to the foreground — never captures/uploads frames of a
+  /// backgrounded app, and never leaves a timer running with no visible UI
+  /// to sample.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.hidden:
+        _timer?.cancel();
+        _timer = null;
+      case AppLifecycleState.resumed:
+        if (_consent && _capturing && _timer == null) {
+          _timer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
+        }
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.detached:
+        break;
+    }
+  }
+
+  /// Test-only seam that drives exactly one capture/upload attempt without
+  /// waiting on the real once-per-second [Timer.periodic] in [resume] —
+  /// lets tests exercise the upload fail-safe and empty-session guard
+  /// deterministically. Not for production use.
+  @visibleForTesting
+  Future<void> debugTick() => _tick();
 
   Future<void> _tick() async {
     if (!_consent) return; // consent gate: capture nothing
+    // Guards against the empty-session-id race: `resume()` may start the
+    // timer before the async `start()` (which sets `_sessionId`) completes,
+    // or after `clearSession()` has emptied it. Never POST a frame with no
+    // session id to attribute it to.
+    if (_sessionId.isEmpty) return;
     final sw = Stopwatch()..start();
     final Uint8List? png = await _captureMaskedPng();
     if (png == null) {
@@ -146,17 +239,37 @@ class ReplayRecorder {
     };
     final List<Map<String, String>> tags = _seenTags();
     if (tags.isNotEmpty) meta['tags'] = tags;
-    await _httpClient.post(
-      Uri.parse('$endpoint/api/replay'),
-      headers: {
-        'Authorization': 'Bearer $apiKey',
-        'x-replay-meta': jsonEncode(meta),
-        'content-type': 'application/octet-stream',
-      },
-      body: png,
-    );
+    await _uploadFrame(meta, png);
     metricsRevision.value++;
-    debugPrint(metricsSummary());
+  }
+
+  /// Uploads a single captured (already-masked) frame.
+  ///
+  /// Fail-safe contract: this must never let a network error, timeout, or
+  /// any other exception escape — [_tick] runs on an unawaited
+  /// `Timer.periodic`, so an uncaught throw here would hit the root zone.
+  /// In host apps that route `PlatformDispatcher.onError` to a crash
+  /// reporter, that would flood fatal reports at the capture cadence (up to
+  /// 1/sec) every time the backend is briefly unreachable. On any failure
+  /// we simply count the frame as dropped and move on — mirrors the
+  /// fail-safe treatment in [_fetchAndApplyPolicy].
+  Future<void> _uploadFrame(Map<String, Object?> meta, Uint8List png) async {
+    try {
+      await _httpClient
+          .post(
+            Uri.parse('$endpoint/api/replay'),
+            headers: {
+              'Authorization': 'Bearer $apiKey',
+              'x-replay-meta': jsonEncode(meta),
+              'content-type': 'application/octet-stream',
+            },
+            body: png,
+          )
+          .timeout(_kUploadTimeout);
+    } catch (e) {
+      droppedFrames++; // fail-safe: never let an upload failure crash/escape
+      debugPrint('[scrywatch_replay] frame upload failed, dropping frame: $e');
+    }
   }
 
   /// The distinct tag strings currently registered via [ScrywatchTag] (see
