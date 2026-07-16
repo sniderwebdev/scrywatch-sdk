@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+Fixed
+
+- **A new session is now started on every app launch.** Previously the session id was persisted in `shared_preferences` and reused across launches, but the frame sequence counter (`_seq`) resets to 0 on each cold start — so a relaunch re-uploaded frames `0, 1, 2…` into the *same* session, overwriting the prior run's frames in storage and double-counting the session's `frame_count`. Session ids are no longer persisted; each launch is a distinct session (the FullStory/Sentry model), keeping the frame sequence a clean 0…N per session.
+
+Changed
+
+- `rotateSession()` and `clearSession()` no longer read or write the `replay_session_id` preference (session ids are no longer persisted). Their observable behavior — rotate mints a fresh id and resets the sequence; clear empties the session so no further frames upload — is unchanged. Call `rotateSession()` on a mid-session user change and `clearSession()` on sign-out as before.
+
 ## 0.2.0
 
 Added

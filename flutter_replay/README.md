@@ -26,8 +26,8 @@ import 'package:scrywatch_replay/scrywatch_replay.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Creates the recorder, generates/persists a session id, and fetches
-  // this project's remote mask policy. Nothing is captured yet.
+  // Creates the recorder, starts a fresh session for this app launch, and
+  // fetches this project's remote mask policy. Nothing is captured yet.
   await ScrywatchReplay.init(apiKey: 'YOUR_API_KEY');
 
   runApp(const MyApp());
@@ -132,7 +132,7 @@ If the remote policy fetch fails (network error, timeout, malformed response) th
 
 ## Dependencies
 
-This package depends on [`package:http`](https://pub.dev/packages/http) (policy fetch + frame upload) and [`package:shared_preferences`](https://pub.dev/packages/shared_preferences) (persisting the session id and the anonymous `device_id`). No other dependencies.
+This package depends on [`package:http`](https://pub.dev/packages/http) (policy fetch + frame upload) and [`package:shared_preferences`](https://pub.dev/packages/shared_preferences) (persisting the anonymous `device_id`; session ids are per-launch and not persisted). No other dependencies.
 
 ## License
 

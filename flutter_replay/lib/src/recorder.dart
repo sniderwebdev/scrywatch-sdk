@@ -86,17 +86,37 @@ class ReplayRecorder with WidgetsBindingObserver {
   final ValueNotifier<int> metricsRevision = ValueNotifier<int>(0);
 
   Future<void> start() async {
-    final prefs = await SharedPreferences.getInstance();
-    _sessionId = prefs.getString('replay_session_id') ??
-        (DateTime.now().microsecondsSinceEpoch.toRadixString(36));
-    await prefs.setString('replay_session_id', _sessionId);
+    // A fresh session id per app launch — deliberately NOT persisted/reused.
+    //
+    // `_seq` is a per-instance counter that starts at 0 on every cold launch
+    // (a new ReplayRecorder), and frames are stored at
+    // `<project>/replay/<sessionId>/<seq>.bin`. Reusing a persisted session id
+    // across launches therefore re-uploaded seq 0,1,2… into the SAME session:
+    // R2 overwrote the earlier run's frames and the worker double-counted
+    // `frame_count`. Minting a new id per launch keeps seq↔frame a bijection.
+    // This matches the FullStory/Sentry model (a session == one app run);
+    // rotateSession() still mints a fresh id on sign-in / mid-run user change.
+    _sessionId = _newSessionId();
+    _seq = 0;
     debugPrint('[scrywatch_replay] session id: $_sessionId  '
         '(paste into the dashboard Replay view)');
+    // SharedPreferences is still needed for the persisted device id (below);
+    // the session id itself is intentionally not read from or written to it.
+    final prefs = await SharedPreferences.getInstance();
     await _loadDeviceId(prefs);
     metricsRevision.value++; // surface the session id in the readout
 
     await _fetchAndApplyPolicy();
   }
+
+  /// Mints a new session id. Base36 microsecond timestamp plus a
+  /// process-local counter so two ids minted in the same microsecond
+  /// (e.g. start() immediately followed by rotateSession()) are still
+  /// distinct. Path-safe for use in the R2 object key.
+  static int _sessionCounter = 0;
+  static String _newSessionId() =>
+      '${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}'
+      '${(_sessionCounter++).toRadixString(36)}';
 
   /// Loads the persisted anonymous device id from [prefs] under
   /// [_deviceIdPrefsKey], generating and persisting a new one on first use.
@@ -149,11 +169,7 @@ class ReplayRecorder with WidgetsBindingObserver {
   /// (possibly different-user) identity. Resets the frame sequence counter
   /// so the new session's frames are numbered from zero.
   Future<void> rotateSession() async {
-    final String newSessionId =
-        DateTime.now().microsecondsSinceEpoch.toRadixString(36);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('replay_session_id', newSessionId);
-    _sessionId = newSessionId;
+    _sessionId = _newSessionId();
     _seq = 0;
     debugPrint('[scrywatch_replay] session id rotated: $_sessionId');
     metricsRevision.value++;
@@ -168,8 +184,6 @@ class ReplayRecorder with WidgetsBindingObserver {
   Future<void> clearSession() async {
     _sessionId = '';
     _seq = 0;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('replay_session_id');
     debugPrint('[scrywatch_replay] session cleared');
     metricsRevision.value++;
   }
