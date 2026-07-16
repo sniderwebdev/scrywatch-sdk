@@ -1,6 +1,6 @@
 name: scrywatch
 description: Official Flutter/Dart SDK for ScryWatch log monitoring and session tracking.
-version: 1.0.0
+version: 1.1.0
 homepage: https://scrywatch.com/guides/flutter-sdk
 repository: https://github.com/scrywatch/sdk-flutter
 
@@ -17,6 +17,7 @@ dependencies:
   flutter:
     sdk: flutter
   http: ^1.1.0
+  shared_preferences: ^2.3.0
 
 dev_dependencies:
   flutter_test:

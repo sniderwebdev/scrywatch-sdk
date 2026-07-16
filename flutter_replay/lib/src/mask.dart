@@ -1,10 +1,16 @@
-// Deny-by-default masking primitives for the session-replay capture path.
+// Masking primitives for the session-replay capture path.
 //
-// Model: a captured frame is fully occluded with solid `kMaskColor` blocks
-// EXCEPT for subtrees explicitly wrapped in [ScrywatchReveal]. Anything
-// wrapped in [ScrywatchMask], and any `obscureText` text field, is
-// force-masked and can never be revealed — even if it happens to sit inside
-// a [ScrywatchReveal] subtree.
+// Two modes (see [MaskMode]):
+// - **blocklist** (default): a captured frame records in the clear EXCEPT the
+//   always-on floor (obscured/password fields), anything wrapped in
+//   [ScrywatchMask], and any configured [MaskRule] match. Record-everything
+//   by default; you opt into masking specific things.
+// - **strict**: the frame is fully occluded with solid `kMaskColor` blocks
+//   EXCEPT subtrees wrapped in [ScrywatchReveal]. For HIPAA/PCI-grade projects.
+//
+// In BOTH modes, anything wrapped in [ScrywatchMask], and any `obscureText`
+// (password) field, is force-masked and can never be revealed — even if it
+// sits inside a [ScrywatchReveal] subtree.
 //
 // Masking is applied as a POST-CAPTURE pass over the captured bitmap (see
 // [maskImage]) — the raw frame is captured first, then occlusion is painted
@@ -325,9 +331,12 @@ class _ScrywatchTagState extends State<ScrywatchTag> {
 }
 
 // ---------------------------------------------------------------------------
-// The always-on PII floor: on-device text detectors + platform-surface
-// detection. Applies in BOTH masking modes and is never revealable — see the
-// module doc and the design doc's "Always-on floor" section.
+// PII/surface detectors. These are NO LONGER an always-on floor — the only
+// always-on floor is obscured (password) fields (see computeMaskGeometry).
+// They now back OPT-IN config rules: `textPattern: email|card|ssn|phone`
+// (via [scrywatchIsPii] / the regexes below) and `widgetType: webview|video`
+// (via [_isPlatformSurfaceWidget]). A project masks these only if it adds the
+// corresponding rule; strict mode masks everything regardless.
 // ---------------------------------------------------------------------------
 
 /// Bounded (no nested/overlapping unbounded quantifiers — safe against
@@ -370,10 +379,10 @@ bool _luhnValid(String digits) {
 }
 
 /// True if [text] contains an email address, a Luhn-valid 13-19 digit
-/// card/PAN, an SSN (`123-45-6789`), or a phone number. This is the on-device
-/// PII floor's text detector — it runs against the visible string content of
-/// `Text`/`EditableText` widgets regardless of tags or policy, in both
-/// masking modes, and nothing can turn it off (see the design doc).
+/// card/PAN, an SSN (`123-45-6789`), or a phone number. Backs the opt-in
+/// `textPattern: card` rule (and, via the regexes above, `email`/`ssn`/
+/// `phone`). This is NO LONGER an always-on floor: PII text is only masked in
+/// a project that adds the corresponding `textPattern` rule, or in strict mode.
 ///
 /// All patterns are bounded (fixed-width quantifiers, no nested unbounded
 /// groups) so this is safe to run per-frame on arbitrary user-authored
@@ -393,9 +402,10 @@ bool scrywatchIsPii(String text) {
 }
 
 /// True if [widget] is a platform-view or native-texture surface: a
-/// WebView, camera/video preview, or any other embedded native view. These
-/// are floor-masked unconditionally because their pixels come from outside
-/// Flutter's own render tree and can't be text-scanned or otherwise vetted.
+/// WebView, camera/video preview, or any other embedded native view. Backs
+/// the opt-in `widgetType: webview` / `video` rules — these are NOT masked by
+/// default anymore; a project opts in via config (or wraps them in
+/// [ScrywatchMask]) if it wants them occluded.
 ///
 /// Matches the concrete `package:flutter` widgets that platform-view/texture
 /// plugins (webview_flutter, camera, video_player, …) are built on, so this
@@ -447,8 +457,8 @@ bool widgetTypeMatches(Element element, String type) {
 /// `RichText`). Returns null for anything else.
 ///
 /// `RichText` is the lower-level widget `Text.rich`/custom gesture-text
-/// widgets build down to — without reading it here, PII rendered through it
-/// would bypass the floor entirely. [InlineSpan.toPlainText] is a single
+/// widgets build down to — without reading it here, text rendered through it
+/// would be invisible to `textPattern` rules. [InlineSpan.toPlainText] is a single
 /// bounded walk of the (already-built, in-memory) span tree, so this stays
 /// cheap enough to run on every element during the per-frame tree walk.
 String? _visibleTextOf(Widget widget) {
@@ -485,8 +495,8 @@ class MaskGeometry {
   final List<Rect> revealRects;
 
   /// Every region that must be masked in EVERY mode and can NEVER be
-  /// revealed: the always-on floor (obscureText, platform surfaces, PII
-  /// text), [ScrywatchMask]-wrapped subtrees, and every [MaskRule] match
+  /// revealed: the always-on floor (obscured/password fields),
+  /// [ScrywatchMask]-wrapped subtrees, and every [MaskRule] match
   /// (tag / widgetType / textPattern) from the active [MaskPolicy]. In
   /// blocklist mode this is the entire occlusion set; in strict mode it is
   /// re-covered after reveal holes are punched, so a reveal can never beat
@@ -521,8 +531,8 @@ class MaskGeometry {
 /// coordinate space a `toImage()` capture of that boundary uses. Synchronous;
 /// safe to call right before capturing.
 ///
-/// Combines, in one tree walk: the always-on floor (obscureText, platform
-/// surfaces, PII text — see the module doc), [ScrywatchMask] rects, and every
+/// Combines, in one tree walk: the always-on floor (obscured/password fields
+/// — see the module doc), [ScrywatchMask] rects, and every
 /// [MaskRule] in [MaskRegistry.instance]'s active [MaskPolicy] (`tag` rules
 /// resolve via the tag registry; `widgetType`/`textPattern` rules resolve via
 /// the same walk). [MaskMode] itself is NOT applied here — that's
@@ -579,8 +589,8 @@ MaskGeometry computeMaskGeometry(
       if (rule.match == MaskMatch.textPattern) rule,
   ];
 
-  // Single tree walk collecting: the always-on floor (obscureText, platform
-  // surfaces, PII text) plus widgetType/textPattern rule matches.
+  // Single tree walk collecting: the always-on floor (obscured/password
+  // fields only) plus widgetType/textPattern rule matches.
   final List<Rect> floorRects = <Rect>[];
   final List<Rect> ruleRects = <Rect>[];
 
@@ -615,16 +625,17 @@ MaskGeometry computeMaskGeometry(
       return rect;
     }
 
-    // --- Always-on floor ---
+    // --- Always-on floor: obscured (password) fields ONLY ---
+    // Record-everything-by-default is the product default. The single thing
+    // never captured without configuration is what a user types into an
+    // obscured (`obscureText`) field — a secret that must never land in a
+    // stored frame. WebViews/native surfaces and heuristic PII text are NO
+    // LONGER floor-masked; opt into them per project via config rules
+    // (`widgetType: webview` / `video`, `textPattern: email|card|ssn|phone`)
+    // or in code via ScrywatchMask / ScrywatchTag. Strict mode still masks
+    // everything by default for HIPAA/PCI-grade projects.
     if (widget is EditableText && widget.obscureText) {
       addFloorRect(rectOf());
-    } else if (_isPlatformSurfaceWidget(widget)) {
-      addFloorRect(rectOf());
-    } else {
-      final String? text = _visibleTextOf(widget);
-      if (text != null && scrywatchIsPii(text)) {
-        addFloorRect(rectOf());
-      }
     }
 
     // --- widgetType rules ---

@@ -1,8 +1,8 @@
 # scrywatch_replay (Flutter SDK)
 
-Session-replay SDK for [ScryWatch](https://scrywatch.com): deny-by-default masking, an always-on PII floor, and remote-policy-driven capture for Flutter apps.
+Session-replay SDK for [ScryWatch](https://scrywatch.com): record-by-default capture with opt-in, remote-policy-driven masking (and a strict deny-by-default mode) for Flutter apps.
 
-> **Preview (0.1.0).** The public API in this package may change before a stable 1.0 release. Masking behavior is the gate we hold ourselves to most strictly — see [Masking model](#masking-model) below.
+> **Preview (0.4.0).** The public API in this package may change before a stable 1.0 release. Masking behavior is the gate we hold ourselves to most strictly — see [Masking model](#masking-model) below.
 
 ## Install
 
@@ -10,7 +10,7 @@ In `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  scrywatch_replay: ^0.1.0
+  scrywatch_replay: ^0.4.0
 ```
 
 ```bash
@@ -26,8 +26,8 @@ import 'package:scrywatch_replay/scrywatch_replay.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Creates the recorder, generates/persists a session id, and fetches
-  // this project's remote mask policy. Nothing is captured yet.
+  // Creates the recorder, starts a fresh session for this app launch, and
+  // fetches this project's remote mask policy. Nothing is captured yet.
   await ScrywatchReplay.init(apiKey: 'YOUR_API_KEY');
 
   runApp(const MyApp());
@@ -66,6 +66,34 @@ ScrywatchReplay.stop();
 
 See [`example/example.dart`](example/example.dart) for a complete runnable example.
 
+## Identity
+
+Every recorder carries an anonymous **`device_id`** — a random UUID generated
+on first use and persisted via `shared_preferences` under
+`scrywatch_device_id` (falling back to an in-memory id if
+`shared_preferences` is unavailable — this never throws). It's the same
+storage key used by the `scrywatch` logging SDK, so an app that uses both
+SDKs shares a single device id across them. It's included as a top-level
+`device_id` field in every segment upload's `x-replay-meta`, giving the
+dashboard's Replay view cross-session continuity for anonymous users with
+zero app code. It can take a tick or two after [`init`](#quick-start) for
+`device_id` to be loaded (it's read from `shared_preferences`
+asynchronously), so the very first segment of a session may not carry it —
+every segment after that will.
+
+When you know who's signed in, call `setUser` so the ScryWatch dashboard's
+User Card can show who a replay session belongs to:
+
+```dart
+ScrywatchReplay.setUser('user_123'); // on sign-in
+ScrywatchReplay.setUser(null);       // on sign-out
+```
+
+This tags subsequent segment uploads' `x-replay-meta` with `user_id:
+'user_123'` until changed again. It's not persisted across restarts — call
+it again (e.g. from wherever your app already knows who's signed in) after
+every [`init`](#quick-start).
+
 ## Masking model
 
 Every captured frame is redacted **after** capture, as a pass over the bitmap — the live screen on the user's device is never blacked out; only the pixels that leave the device are masked. This is the same approach used by Sentry/PostHog session replay.
@@ -80,18 +108,21 @@ Three widgets control what's eligible to show:
 
 ### The always-on floor
 
-Regardless of tags, mode, or the remote policy, these are **always** masked and can never be revealed:
+Regardless of tags, mode, or the remote policy, one thing is **always** masked and can never be revealed:
 
-- Any `TextField`/`EditableText` with `obscureText: true`.
-- Text matching an email address, a Luhn-valid 13–19 digit card/PAN, an SSN (`123-45-6789`), or a phone number — scanned from `Text`, `Text.rich`, `EditableText`, and `RichText` content.
-- Platform-view / native-texture surfaces: WebViews, camera/video previews, and any other embedded native view (their pixels come from outside Flutter's render tree and can't be text-scanned).
+- Any `TextField`/`EditableText` with `obscureText: true` (password fields) — a secret a user types must never land in a stored frame.
+
+Everything else records by default and is **opt-in** to mask via config rules or in-code widgets (see below) — including PII text and WebViews/native surfaces, which are **no longer masked automatically**:
+
+- **PII text** (email, Luhn-valid card/PAN, SSN, phone) → add a `textPattern: email | card | ssn | phone` rule. Scanned from `Text`, `Text.rich`, `EditableText`, and `RichText`.
+- **WebViews / native surfaces** (camera/video previews, platform views) → add a `widgetType: webview` or `video` rule, or wrap them in `ScrywatchMask`. Note these can't be captured meaningfully anyway (their pixels come from outside Flutter's render tree).
 
 ### Modes
 
 The remote policy (fetched at `ScrywatchReplay.init()`, configurable in the ScryWatch dashboard's masking editor) sets one of two modes:
 
-- **blocklist** (default) — records everything except the always-on floor and anything matched by a rule (`tag`, `widgetType`, or `textPattern`). Best fidelity, safe default for adoption.
-- **strict** — deny-by-default: everything is masked except `ScrywatchReveal`-wrapped subtrees. The floor still wins — PII inside a `ScrywatchReveal` is masked regardless.
+- **blocklist** (default) — records everything except the always-on floor (password fields) and anything matched by a rule (`tag`, `widgetType`, or `textPattern`). Record-everything-by-default; you opt into masking. Best fidelity/adoption.
+- **strict** — deny-by-default: everything is masked except `ScrywatchReveal`-wrapped subtrees. The floor still wins — an obscured field inside a `ScrywatchReveal` is masked regardless. For HIPAA/PCI-grade projects.
 
 ### Fail-safe behavior
 
@@ -104,7 +135,7 @@ If the remote policy fetch fails (network error, timeout, malformed response) th
 
 ## Dependencies
 
-This package depends on [`package:http`](https://pub.dev/packages/http) (policy fetch + frame upload) and [`package:shared_preferences`](https://pub.dev/packages/shared_preferences) (persisting the session id). No other dependencies.
+This package depends on [`package:http`](https://pub.dev/packages/http) (policy fetch + frame upload) and [`package:shared_preferences`](https://pub.dev/packages/shared_preferences) (persisting the anonymous `device_id`; session ids are per-launch and not persisted). No other dependencies.
 
 ## License
 

@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.4.0
+
+Changed
+
+- **Default masking is now record-everything.** The always-on floor is reduced to **obscured/password fields only** (`obscureText: true`) — that is the one thing never captured without configuration. Heuristic **PII text** (email/card/SSN/phone) and **WebViews/native surfaces** are **no longer masked automatically**; opt into them per project via config rules (`textPattern: email|card|ssn|phone`, `widgetType: webview|video`) or in code via `ScrywatchMask`/`ScrywatchTag`. This matches the "record by default, mask only what you configure" model. **Strict mode is unchanged** — it still masks everything by default (except `ScrywatchReveal`) for HIPAA/PCI-grade projects.
+  - The PII detectors (`scrywatchIsPii` and the email/card/SSN/phone regexes) and platform-surface detection remain — they now back the opt-in `textPattern` / `widgetType` rules instead of an unconditional floor.
+  - **Action required if you relied on the automatic PII/WebView floor:** add the corresponding `textPattern` / `widgetType` rules in the dashboard masking editor (or switch that project to strict mode).
+
+## 0.3.0
+
+Fixed
+
+- **A new session is now started on every app launch.** Previously the session id was persisted in `shared_preferences` and reused across launches, but the frame sequence counter (`_seq`) resets to 0 on each cold start — so a relaunch re-uploaded frames `0, 1, 2…` into the *same* session, overwriting the prior run's frames in storage and double-counting the session's `frame_count`. Session ids are no longer persisted; each launch is a distinct session (the FullStory/Sentry model), keeping the frame sequence a clean 0…N per session.
+
+Changed
+
+- `rotateSession()` and `clearSession()` no longer read or write the `replay_session_id` preference (session ids are no longer persisted). Their observable behavior — rotate mints a fresh id and resets the sequence; clear empties the session so no further frames upload — is unchanged. Call `rotateSession()` on a mid-session user change and `clearSession()` on sign-out as before.
+
+## 0.2.0
+
+Added
+
+- Anonymous, persistent `device_id`: generated on first use (random v4-ish UUID) and persisted via `shared_preferences` under `scrywatch_device_id` — the same key used by the `scrywatch` logging SDK, so an app using both SDKs shares one device id. Falls back to an in-memory id (never persisted, never throws) if `shared_preferences` is unavailable. Included as a top-level `device_id` field in every segment upload's `x-replay-meta` once loaded.
+- `ScrywatchReplay.setUser(String? userId)`: sets (or clears, with `null`) the current user id, included as `user_id` in subsequent segment uploads' `x-replay-meta`. Not persisted — call it with the signed-in user's id on sign-in and `null` on sign-out. This is what powers the ScryWatch dashboard's "User Card" (who a replay session belongs to).
+
 ## 0.1.0
 
 Initial preview release.

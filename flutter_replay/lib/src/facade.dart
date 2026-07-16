@@ -120,6 +120,25 @@ class ScrywatchReplay {
     await _recorder?.clearSession();
   }
 
+  /// Sets (or clears, with `null`) the current user id, included as
+  /// `user_id` in every subsequent segment upload's `x-replay-meta` until
+  /// changed again. This is separate from — and doesn't replace — an
+  /// anonymous, SDK-generated `device_id` that's always included once
+  /// loaded (see the package README's "Identity" section).
+  ///
+  /// Call this with the signed-in user's id as soon as you know it
+  /// (typically right after sign-in), and with `null` on sign-out:
+  ///
+  /// ```dart
+  /// ScrywatchReplay.setUser('user_123'); // on sign-in
+  /// ScrywatchReplay.setUser(null);       // on sign-out
+  /// ```
+  ///
+  /// Not persisted across restarts — a no-op before [init] completes.
+  static void setUser(String? userId) {
+    _recorder?.setUser(userId);
+  }
+
   /// Wraps [child] in the capture boundary. Pass this directly as
   /// `MaterialApp.builder` (or `CupertinoApp.builder`/`WidgetsApp.builder`)
   /// so it sits BELOW the app's `Directionality`/`MediaQuery` and wraps the
