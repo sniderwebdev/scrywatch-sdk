@@ -1,6 +1,6 @@
 import type { LogMonitorConfig, LogLevel, LogType, LogEvent } from './types';
 import { EventBuffer } from './buffer';
-import { detectDeviceType } from './device';
+import { detectDeviceType, getOrCreateDeviceId } from './device';
 
 export type { LogMonitorConfig, LogLevel, LogType, LogEvent };
 
@@ -17,11 +17,13 @@ export class LogMonitor {
   private service: string | undefined;
   private environment: string | undefined;
   private deviceType: string;
+  private deviceId: string;
 
   constructor(config: LogMonitorConfig) {
     this.service = config.service;
     this.environment = config.environment;
     this.deviceType = detectDeviceType();
+    this.deviceId = getOrCreateDeviceId();
 
     this.buffer = new EventBuffer(
       config.endpoint,
@@ -29,6 +31,7 @@ export class LogMonitor {
       config.bufferSize ?? 50,
       config.flushInterval ?? 10000,
       config.maxRetries ?? 3,
+      this.deviceId,
     );
 
     // Auto-flush on page hide (browser)
@@ -43,6 +46,20 @@ export class LogMonitor {
   startSession(): void { this.sessionId = generateId(); }
   endSession(): void { this.buffer.flush(); this.sessionId = null; }
   setUserId(userId: string): void { this.userId = userId; }
+
+  /** The persisted anonymous device id sent with every ingest request. */
+  getDeviceId(): string { return this.deviceId; }
+
+  /**
+   * Identifies the current user: tags subsequent events with `userId` and
+   * upserts `traits` (e.g. email/name) server-side via `/api/identify`.
+   * Fire-and-forget — network/HTTP failures are swallowed and never thrown
+   * to the caller.
+   */
+  identify(userId: string, traits?: Record<string, unknown>): void {
+    this.userId = userId;
+    void this.buffer.identify(userId, traits);
+  }
 
   private log(level: LogLevel, type: LogType, message: string, metadata?: Record<string, unknown>): void {
     const event: LogEvent = {

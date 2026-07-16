@@ -11,6 +11,7 @@ export class EventBuffer {
     private bufferSize: number,
     private flushInterval: number,
     private maxRetries: number,
+    private deviceId: string,
   ) {
     this.startTimer();
   }
@@ -35,7 +36,7 @@ export class EventBuffer {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${this.apiKey}`,
           },
-          body: JSON.stringify({ events }),
+          body: JSON.stringify({ events, device_id: this.deviceId }),
         });
         if (res.ok) break;
         if (attempt === this.maxRetries) console.warn('[LogMonitor] Failed to flush events after retries');
@@ -45,6 +46,26 @@ export class EventBuffer {
     }
 
     this.flushing = false;
+  }
+
+  /**
+   * Upserts the user's identity + traits server-side. Fire-and-forget from
+   * the caller's perspective: network/HTTP failures are swallowed so a bad
+   * connection never surfaces an error to the host app.
+   */
+  async identify(userId: string, traits?: Record<string, unknown>): Promise<void> {
+    try {
+      await fetch(`${this.endpoint}/api/identify`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({ user_id: userId, traits }),
+      });
+    } catch {
+      console.warn('[LogMonitor] Failed to identify user: network error');
+    }
   }
 
   private startTimer(): void {
