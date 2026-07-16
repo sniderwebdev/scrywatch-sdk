@@ -2,7 +2,7 @@ name: scrywatch_replay
 description: >-
   Session-replay SDK for ScryWatch: deny-by-default masking, an always-on
   PII floor, and remote-policy-driven capture for Flutter apps.
-version: 0.3.0
+version: 0.4.0
 homepage: https://scrywatch.com/guides/24-session-replay-overview
 repository: https://github.com/scrywatch/sdk-flutter-replay
 

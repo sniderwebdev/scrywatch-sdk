@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+Changed
+
+- **Default masking is now record-everything.** The always-on floor is reduced to **obscured/password fields only** (`obscureText: true`) — that is the one thing never captured without configuration. Heuristic **PII text** (email/card/SSN/phone) and **WebViews/native surfaces** are **no longer masked automatically**; opt into them per project via config rules (`textPattern: email|card|ssn|phone`, `widgetType: webview|video`) or in code via `ScrywatchMask`/`ScrywatchTag`. This matches the "record by default, mask only what you configure" model. **Strict mode is unchanged** — it still masks everything by default (except `ScrywatchReveal`) for HIPAA/PCI-grade projects.
+  - The PII detectors (`scrywatchIsPii` and the email/card/SSN/phone regexes) and platform-surface detection remain — they now back the opt-in `textPattern` / `widgetType` rules instead of an unconditional floor.
+  - **Action required if you relied on the automatic PII/WebView floor:** add the corresponding `textPattern` / `widgetType` rules in the dashboard masking editor (or switch that project to strict mode).
+
 ## 0.3.0
 
 Fixed

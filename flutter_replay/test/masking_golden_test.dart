@@ -113,8 +113,11 @@ void main() {
   setUp(() => MaskRegistry.instance.setPolicy(const MaskPolicy()));
 
   testWidgets(
-    'PII regions are fully occluded; revealed safe element is visible',
+    'strict mode: all content is occluded except a ScrywatchReveal-wrapped element',
     (WidgetTester tester) async {
+      // Deny-by-default mode — full occlusion here comes from strict mode, not
+      // from any PII floor (the only always-on floor now is obscured fields).
+      MaskRegistry.instance.setPolicy(const MaskPolicy(mode: MaskMode.strict));
       final GlobalKey boundaryKey = GlobalKey();
       final GlobalKey emailKey = GlobalKey();
       final GlobalKey cardKey = GlobalKey();
@@ -251,11 +254,64 @@ void main() {
     },
   );
 
-  group('the always-on PII floor (blocklist mode)', () {
+  group('PII masking is opt-in via textPattern rules (blocklist mode)', () {
     testWidgets(
-      'an untagged Text containing an email address is masked',
+      'an untagged email is NOT masked by default (no always-on PII floor)',
       (WidgetTester tester) async {
         MaskRegistry.instance.setPolicy(const MaskPolicy());
+        final GlobalKey boundaryKey = GlobalKey();
+        final GlobalKey emailKey = GlobalKey();
+        const Color bg = Color(0xFFFFFFFF);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: maskedRoot(
+              boundaryKey: boundaryKey,
+              child: Scaffold(
+                body: Container(
+                  key: emailKey,
+                  color: bg,
+                  width: 220,
+                  height: 40,
+                  child: const Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('user@example.com'),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        final RenderBox boundaryBox =
+            boundaryKey.currentContext!.findRenderObject()! as RenderBox;
+        // Sample near the far edge, clear of the left-aligned glyphs.
+        final Offset edge = _edgeOf(emailKey, boundaryBox);
+        final (ByteData data, int imgWidth) = await _captureMasked(
+          tester,
+          boundaryKey,
+        );
+
+        expect(
+          _pixel(data, imgWidth, edge.dx.round(), edge.dy.round()),
+          equals(0xFFFFFF),
+          reason:
+              'with no textPattern rule, an untagged email records in the clear '
+              '— PII text is no longer an always-on floor',
+        );
+      },
+    );
+
+    testWidgets(
+      'an untagged email IS masked when a textPattern:email rule is configured',
+      (WidgetTester tester) async {
+        MaskRegistry.instance.setPolicy(const MaskPolicy(
+          mode: MaskMode.blocklist,
+          rules: <MaskRule>[
+            MaskRule(match: MaskMatch.textPattern, value: 'email'),
+          ],
+        ));
         final GlobalKey boundaryKey = GlobalKey();
         final GlobalKey emailKey = GlobalKey();
 
@@ -289,15 +345,20 @@ void main() {
           _pixel(data, imgWidth, center.dx.round(), center.dy.round()),
           equals(kMaskColorRgb),
           reason:
-              'an untagged email string must still be masked by the PII floor',
+              'a configured textPattern:email rule must mask the matching text',
         );
       },
     );
 
     testWidgets(
-      'an untagged Text containing a Luhn-valid card number is masked',
+      'a Luhn-valid card IS masked when a textPattern:card rule is configured',
       (WidgetTester tester) async {
-        MaskRegistry.instance.setPolicy(const MaskPolicy());
+        MaskRegistry.instance.setPolicy(const MaskPolicy(
+          mode: MaskMode.blocklist,
+          rules: <MaskRule>[
+            MaskRule(match: MaskMatch.textPattern, value: 'card'),
+          ],
+        ));
         final GlobalKey boundaryKey = GlobalKey();
         final GlobalKey cardKey = GlobalKey();
 
@@ -331,13 +392,13 @@ void main() {
           _pixel(data, imgWidth, center.dx.round(), center.dy.round()),
           equals(kMaskColorRgb),
           reason:
-              'a Luhn-valid card number must be masked by the PII floor',
+              'a configured textPattern:card rule must mask the matching text',
         );
       },
     );
 
     testWidgets(
-      'an untagged Text with no PII is NOT masked in blocklist mode',
+      'an untagged Text with no rule match is NOT masked in blocklist mode',
       (WidgetTester tester) async {
         MaskRegistry.instance.setPolicy(const MaskPolicy());
         final GlobalKey boundaryKey = GlobalKey();
@@ -595,14 +656,14 @@ void main() {
 
     testWidgets(
       'strict: everything is masked except a ScrywatchReveal element, but '
-      'PII inside a reveal is still masked (the floor beats reveal)',
+      'an obscured field inside a reveal is still masked (the floor beats reveal)',
       (WidgetTester tester) async {
         MaskRegistry.instance.setPolicy(const MaskPolicy(mode: MaskMode.strict));
 
         final GlobalKey boundaryKey = GlobalKey();
         final GlobalKey safeKey = GlobalKey();
         final GlobalKey plainKey = GlobalKey();
-        final GlobalKey piiInRevealKey = GlobalKey();
+        final GlobalKey obscuredInRevealKey = GlobalKey();
 
         await tester.pumpWidget(
           MaterialApp(
@@ -626,12 +687,12 @@ void main() {
                     // Not revealed at all — masked by strict's
                     // deny-by-default baseline.
                     Text('untouched plain text', key: plainKey),
-                    // Revealed, but PII — the floor must win over the
-                    // reveal.
+                    // Revealed, but an obscured (password) field — the floor
+                    // must win over the reveal.
                     ScrywatchReveal(
-                      child: Text(
-                        'user@example.com',
-                        key: piiInRevealKey,
+                      child: TextField(
+                        key: obscuredInRevealKey,
+                        obscureText: true,
                       ),
                     ),
                   ],
@@ -646,7 +707,7 @@ void main() {
             boundaryKey.currentContext!.findRenderObject()! as RenderBox;
         final Offset safeCenter = _centerOf(safeKey, boundaryBox);
         final Offset plainCenter = _centerOf(plainKey, boundaryBox);
-        final Offset piiCenter = _centerOf(piiInRevealKey, boundaryBox);
+        final Offset obscuredCenter = _centerOf(obscuredInRevealKey, boundaryBox);
 
         final (ByteData data, int imgWidth) = await _captureMasked(
           tester,
@@ -669,11 +730,11 @@ void main() {
           reason: 'un-revealed text is masked by the strict baseline',
         );
         expect(
-          _pixel(data, imgWidth, piiCenter.dx.round(), piiCenter.dy.round()),
+          _pixel(data, imgWidth, obscuredCenter.dx.round(), obscuredCenter.dy.round()),
           equals(kMaskColorRgb),
           reason:
-              'PII inside a ScrywatchReveal must still be masked — the '
-              'floor beats reveal',
+              'an obscured field inside a ScrywatchReveal must still be masked '
+              '— the floor beats reveal',
         );
       },
     );
@@ -787,11 +848,18 @@ void main() {
     );
   });
 
-  group('RichText PII floor', () {
+  group('RichText is scanned for textPattern rules', () {
     testWidgets(
-      'an untagged RichText containing an email address is masked',
+      'a RichText matching a textPattern rule is masked (same as Text)',
       (WidgetTester tester) async {
-        MaskRegistry.instance.setPolicy(const MaskPolicy());
+        // Proves RichText content is read by _visibleTextOf so `textPattern`
+        // rules apply to it too — not just to plain Text.
+        MaskRegistry.instance.setPolicy(const MaskPolicy(
+          mode: MaskMode.blocklist,
+          rules: <MaskRule>[
+            MaskRule(match: MaskMatch.textPattern, value: 'email'),
+          ],
+        ));
         final GlobalKey boundaryKey = GlobalKey();
         final GlobalKey richKey = GlobalKey();
 
@@ -830,8 +898,7 @@ void main() {
           _pixel(data, imgWidth, center.dx.round(), center.dy.round()),
           equals(kMaskColorRgb),
           reason:
-              'an untagged RichText carrying PII must be masked by the '
-              'floor, same as Text',
+              'a textPattern rule must mask matching RichText content, same as Text',
         );
       },
     );

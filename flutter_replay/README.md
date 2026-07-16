@@ -1,8 +1,8 @@
 # scrywatch_replay (Flutter SDK)
 
-Session-replay SDK for [ScryWatch](https://scrywatch.com): deny-by-default masking, an always-on PII floor, and remote-policy-driven capture for Flutter apps.
+Session-replay SDK for [ScryWatch](https://scrywatch.com): record-by-default capture with opt-in, remote-policy-driven masking (and a strict deny-by-default mode) for Flutter apps.
 
-> **Preview (0.2.0).** The public API in this package may change before a stable 1.0 release. Masking behavior is the gate we hold ourselves to most strictly — see [Masking model](#masking-model) below.
+> **Preview (0.4.0).** The public API in this package may change before a stable 1.0 release. Masking behavior is the gate we hold ourselves to most strictly — see [Masking model](#masking-model) below.
 
 ## Install
 
@@ -10,7 +10,7 @@ In `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  scrywatch_replay: ^0.2.0
+  scrywatch_replay: ^0.4.0
 ```
 
 ```bash
@@ -108,18 +108,21 @@ Three widgets control what's eligible to show:
 
 ### The always-on floor
 
-Regardless of tags, mode, or the remote policy, these are **always** masked and can never be revealed:
+Regardless of tags, mode, or the remote policy, one thing is **always** masked and can never be revealed:
 
-- Any `TextField`/`EditableText` with `obscureText: true`.
-- Text matching an email address, a Luhn-valid 13–19 digit card/PAN, an SSN (`123-45-6789`), or a phone number — scanned from `Text`, `Text.rich`, `EditableText`, and `RichText` content.
-- Platform-view / native-texture surfaces: WebViews, camera/video previews, and any other embedded native view (their pixels come from outside Flutter's render tree and can't be text-scanned).
+- Any `TextField`/`EditableText` with `obscureText: true` (password fields) — a secret a user types must never land in a stored frame.
+
+Everything else records by default and is **opt-in** to mask via config rules or in-code widgets (see below) — including PII text and WebViews/native surfaces, which are **no longer masked automatically**:
+
+- **PII text** (email, Luhn-valid card/PAN, SSN, phone) → add a `textPattern: email | card | ssn | phone` rule. Scanned from `Text`, `Text.rich`, `EditableText`, and `RichText`.
+- **WebViews / native surfaces** (camera/video previews, platform views) → add a `widgetType: webview` or `video` rule, or wrap them in `ScrywatchMask`. Note these can't be captured meaningfully anyway (their pixels come from outside Flutter's render tree).
 
 ### Modes
 
 The remote policy (fetched at `ScrywatchReplay.init()`, configurable in the ScryWatch dashboard's masking editor) sets one of two modes:
 
-- **blocklist** (default) — records everything except the always-on floor and anything matched by a rule (`tag`, `widgetType`, or `textPattern`). Best fidelity, safe default for adoption.
-- **strict** — deny-by-default: everything is masked except `ScrywatchReveal`-wrapped subtrees. The floor still wins — PII inside a `ScrywatchReveal` is masked regardless.
+- **blocklist** (default) — records everything except the always-on floor (password fields) and anything matched by a rule (`tag`, `widgetType`, or `textPattern`). Record-everything-by-default; you opt into masking. Best fidelity/adoption.
+- **strict** — deny-by-default: everything is masked except `ScrywatchReveal`-wrapped subtrees. The floor still wins — an obscured field inside a `ScrywatchReveal` is masked regardless. For HIPAA/PCI-grade projects.
 
 ### Fail-safe behavior
 
