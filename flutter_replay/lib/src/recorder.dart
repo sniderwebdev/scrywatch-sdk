@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/rendering.dart';
@@ -35,6 +36,11 @@ class ReplayRecorder with WidgetsBindingObserver {
   final String apiKey;
   final GlobalKey boundaryKey;
 
+  /// SharedPreferences key for the persisted anonymous device id. This EXACT
+  /// key is shared with the `scrywatch` (logging) SDK's `LogClient` — an app
+  /// that uses both SDKs gets a single, consistent device id across them.
+  static const String _deviceIdPrefsKey = 'scrywatch_device_id';
+
   /// Injectable for tests, so the policy-fetch and upload paths can be
   /// exercised against a `package:http/testing.dart` `MockClient` instead of
   /// the real network. Defaults to a real [http.Client] in production.
@@ -59,6 +65,17 @@ class ReplayRecorder with WidgetsBindingObserver {
   /// dashboard's Replay view to watch this session back. Empty until
   /// [start] has run.
   String get sessionId => _sessionId;
+
+  /// The persisted anonymous device id, or `null` until [start] has loaded
+  /// (or generated) it. Included in `x-replay-meta` once available — see
+  /// the loading-race note on [_tick].
+  String? _deviceId;
+
+  /// The current user id set via [setUser], or `null` when signed out /
+  /// unknown. Not persisted — the host app is expected to call [setUser]
+  /// again after every [start].
+  String? _userId;
+
   int totalBytes = 0; // instrumentation
   final List<int> frameEncodeMs = []; // instrumentation
   int droppedFrames = 0; // instrumentation
@@ -75,10 +92,55 @@ class ReplayRecorder with WidgetsBindingObserver {
     await prefs.setString('replay_session_id', _sessionId);
     debugPrint('[scrywatch_replay] session id: $_sessionId  '
         '(paste into the dashboard Replay view)');
+    await _loadDeviceId(prefs);
     metricsRevision.value++; // surface the session id in the readout
 
     await _fetchAndApplyPolicy();
   }
+
+  /// Loads the persisted anonymous device id from [prefs] under
+  /// [_deviceIdPrefsKey], generating and persisting a new one on first use.
+  /// Falls back to an in-memory id (not persisted) if reading/writing prefs
+  /// throws — never lets a device-id failure crash [start]. Runs as part of
+  /// [start], so [_deviceId] is populated promptly at init; it can still
+  /// race a [resume] fired before [start] completes, same as [_sessionId]
+  /// (see the guard in [_tick]).
+  Future<void> _loadDeviceId(SharedPreferences prefs) async {
+    try {
+      String? id = prefs.getString(_deviceIdPrefsKey);
+      if (id == null || id.isEmpty) {
+        id = _generateUuid();
+        await prefs.setString(_deviceIdPrefsKey, id);
+      }
+      _deviceId = id;
+    } catch (e) {
+      _deviceId ??= _generateUuid();
+      debugPrint('[scrywatch_replay] device id load failed, using an '
+          'in-memory id: $e');
+    }
+  }
+
+  /// Generates a random RFC-4122-ish v4 UUID. Mirrors the logging SDK's
+  /// `LogClient._generateUuid` so both device ids look the same shape.
+  static String _generateUuid() {
+    final Random rand = Random.secure();
+    final List<int> bytes = List<int>.generate(16, (_) => rand.nextInt(256));
+    // Set version (4) and variant (RFC 4122) bits.
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    final List<String> hex =
+        bytes.map((int b) => b.toRadixString(16).padLeft(2, '0')).toList();
+    return '${hex.sublist(0, 4).join()}-${hex.sublist(4, 6).join()}-'
+        '${hex.sublist(6, 8).join()}-${hex.sublist(8, 10).join()}-'
+        '${hex.sublist(10, 16).join()}';
+  }
+
+  /// Sets (or clears, with `null`) the current user id. Included as
+  /// `user_id` in subsequent segment uploads' `x-replay-meta` until changed
+  /// again. Not persisted — call this again after every [start] (typically
+  /// from the same place your app already knows who's signed in). Call it
+  /// on sign-in with the user's id, and with `null` on sign-out.
+  void setUser(String? userId) => _userId = userId;
 
   /// Rotates to a brand-new session id, discarding the old one.
   ///
@@ -237,6 +299,13 @@ class ReplayRecorder with WidgetsBindingObserver {
       'frame_count': 1,
       'platform': 'flutter',
     };
+    // `_deviceId` may still be null on the very first tick if `resume()` won
+    // the race against the async `start()` (same race documented on
+    // `_sessionId`) — we deliberately don't await it here so a slow/absent
+    // SharedPreferences never delays capture. It's loaded promptly by
+    // `start()`, so every subsequent segment carries it.
+    if (_deviceId != null) meta['device_id'] = _deviceId;
+    if (_userId != null) meta['user_id'] = _userId;
     final List<Map<String, String>> tags = _seenTags();
     if (tags.isNotEmpty) meta['tags'] = tags;
     await _uploadFrame(meta, png);

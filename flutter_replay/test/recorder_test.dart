@@ -11,6 +11,7 @@
 // (empty session, no consent) don't need a mounted boundary or `runAsync`.
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -176,6 +177,125 @@ void main() {
 
         final SharedPreferences prefs = await SharedPreferences.getInstance();
         expect(prefs.getString('replay_session_id'), isNull);
+      },
+    );
+  });
+
+  group('identity (device_id / user_id)', () {
+    testWidgets(
+      'a generated device_id is persisted and reused by a fresh recorder '
+      '(simulated restart)',
+      (WidgetTester tester) async {
+        final MockClient client = _client(
+          (http.Request request) async => http.Response('', 200),
+        );
+        final GlobalKey boundaryKey = await _mountBoundary(tester);
+
+        final ReplayRecorder first = ReplayRecorder(
+          endpoint: 'https://example.test',
+          apiKey: 'test-key',
+          boundaryKey: boundaryKey,
+          httpClient: client,
+        );
+        await first.start();
+
+        final SharedPreferences prefs = await SharedPreferences.getInstance();
+        final String? persisted = prefs.getString('scrywatch_device_id');
+        expect(persisted, isNotNull);
+        expect(persisted, isNotEmpty);
+
+        // Simulate an app restart: a brand-new recorder reading the same
+        // (mocked) SharedPreferences backing store.
+        final ReplayRecorder second = ReplayRecorder(
+          endpoint: 'https://example.test',
+          apiKey: 'test-key',
+          boundaryKey: boundaryKey,
+          httpClient: client,
+        );
+        await second.start();
+
+        expect(prefs.getString('scrywatch_device_id'), persisted);
+      },
+    );
+
+    testWidgets(
+      'x-replay-meta on an upload includes device_id',
+      (WidgetTester tester) async {
+        Map<String, dynamic>? meta;
+        final MockClient client = _client((http.Request request) async {
+          meta = jsonDecode(request.headers['x-replay-meta']!)
+              as Map<String, dynamic>;
+          return http.Response('', 200);
+        });
+        final GlobalKey boundaryKey = await _mountBoundary(tester);
+        final ReplayRecorder recorder = ReplayRecorder(
+          endpoint: 'https://example.test',
+          apiKey: 'test-key',
+          boundaryKey: boundaryKey,
+          httpClient: client,
+        );
+        await recorder.start();
+        recorder.setConsent(true);
+
+        await tester.runAsync(() => recorder.debugTick());
+
+        expect(meta, isNotNull);
+        expect(meta!['device_id'], isA<String>());
+        expect((meta!['device_id'] as String), isNotEmpty);
+      },
+    );
+
+    testWidgets(
+      "setUser adds user_id to subsequent meta, and setUser(null) removes "
+      'it again',
+      (WidgetTester tester) async {
+        final List<Map<String, dynamic>> metas = <Map<String, dynamic>>[];
+        final MockClient client = _client((http.Request request) async {
+          metas.add(
+            jsonDecode(request.headers['x-replay-meta']!)
+                as Map<String, dynamic>,
+          );
+          return http.Response('', 200);
+        });
+        final GlobalKey boundaryKey = await _mountBoundary(tester);
+        final ReplayRecorder recorder = ReplayRecorder(
+          endpoint: 'https://example.test',
+          apiKey: 'test-key',
+          boundaryKey: boundaryKey,
+          httpClient: client,
+        );
+        await recorder.start();
+        recorder.setConsent(true);
+
+        await tester.runAsync(() => recorder.debugTick());
+        expect(metas[0].containsKey('user_id'), isFalse);
+
+        recorder.setUser('u123');
+        await tester.runAsync(() => recorder.debugTick());
+        expect(metas[1]['user_id'], 'u123');
+
+        recorder.setUser(null);
+        await tester.runAsync(() => recorder.debugTick());
+        expect(metas[2].containsKey('user_id'), isFalse);
+      },
+    );
+
+    testWidgets(
+      'start() never throws when SharedPreferences has no prior values',
+      (WidgetTester tester) async {
+        SharedPreferences.setMockInitialValues(<String, Object>{});
+        final MockClient client = _client(
+          (http.Request request) async => http.Response('', 200),
+        );
+        final GlobalKey boundaryKey = await _mountBoundary(tester);
+        final ReplayRecorder recorder = ReplayRecorder(
+          endpoint: 'https://example.test',
+          apiKey: 'test-key',
+          boundaryKey: boundaryKey,
+          httpClient: client,
+        );
+
+        await expectLater(recorder.start(), completes);
       },
     );
   });

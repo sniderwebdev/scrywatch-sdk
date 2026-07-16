@@ -2,7 +2,7 @@
 
 Session-replay SDK for [ScryWatch](https://scrywatch.com): deny-by-default masking, an always-on PII floor, and remote-policy-driven capture for Flutter apps.
 
-> **Preview (0.1.0).** The public API in this package may change before a stable 1.0 release. Masking behavior is the gate we hold ourselves to most strictly — see [Masking model](#masking-model) below.
+> **Preview (0.2.0).** The public API in this package may change before a stable 1.0 release. Masking behavior is the gate we hold ourselves to most strictly — see [Masking model](#masking-model) below.
 
 ## Install
 
@@ -10,7 +10,7 @@ In `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  scrywatch_replay: ^0.1.0
+  scrywatch_replay: ^0.2.0
 ```
 
 ```bash
@@ -66,6 +66,34 @@ ScrywatchReplay.stop();
 
 See [`example/example.dart`](example/example.dart) for a complete runnable example.
 
+## Identity
+
+Every recorder carries an anonymous **`device_id`** — a random UUID generated
+on first use and persisted via `shared_preferences` under
+`scrywatch_device_id` (falling back to an in-memory id if
+`shared_preferences` is unavailable — this never throws). It's the same
+storage key used by the `scrywatch` logging SDK, so an app that uses both
+SDKs shares a single device id across them. It's included as a top-level
+`device_id` field in every segment upload's `x-replay-meta`, giving the
+dashboard's Replay view cross-session continuity for anonymous users with
+zero app code. It can take a tick or two after [`init`](#quick-start) for
+`device_id` to be loaded (it's read from `shared_preferences`
+asynchronously), so the very first segment of a session may not carry it —
+every segment after that will.
+
+When you know who's signed in, call `setUser` so the ScryWatch dashboard's
+User Card can show who a replay session belongs to:
+
+```dart
+ScrywatchReplay.setUser('user_123'); // on sign-in
+ScrywatchReplay.setUser(null);       // on sign-out
+```
+
+This tags subsequent segment uploads' `x-replay-meta` with `user_id:
+'user_123'` until changed again. It's not persisted across restarts — call
+it again (e.g. from wherever your app already knows who's signed in) after
+every [`init`](#quick-start).
+
 ## Masking model
 
 Every captured frame is redacted **after** capture, as a pass over the bitmap — the live screen on the user's device is never blacked out; only the pixels that leave the device are masked. This is the same approach used by Sentry/PostHog session replay.
@@ -104,7 +132,7 @@ If the remote policy fetch fails (network error, timeout, malformed response) th
 
 ## Dependencies
 
-This package depends on [`package:http`](https://pub.dev/packages/http) (policy fetch + frame upload) and [`package:shared_preferences`](https://pub.dev/packages/shared_preferences) (persisting the session id). No other dependencies.
+This package depends on [`package:http`](https://pub.dev/packages/http) (policy fetch + frame upload) and [`package:shared_preferences`](https://pub.dev/packages/shared_preferences) (persisting the session id and the anonymous `device_id`). No other dependencies.
 
 ## License
 

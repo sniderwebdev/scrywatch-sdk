@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0
+
+Added
+
+- Anonymous, persistent `device_id`: generated on first use (random v4-ish UUID) and persisted via `shared_preferences` under `scrywatch_device_id` — the same key used by the `scrywatch` logging SDK, so an app using both SDKs shares one device id. Falls back to an in-memory id (never persisted, never throws) if `shared_preferences` is unavailable. Included as a top-level `device_id` field in every segment upload's `x-replay-meta` once loaded.
+- `ScrywatchReplay.setUser(String? userId)`: sets (or clears, with `null`) the current user id, included as `user_id` in subsequent segment uploads' `x-replay-meta`. Not persisted — call it with the signed-in user's id on sign-in and `null` on sign-out. This is what powers the ScryWatch dashboard's "User Card" (who a replay session belongs to).
+
 ## 0.1.0
 
 Initial preview release.
